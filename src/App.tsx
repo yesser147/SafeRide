@@ -18,6 +18,7 @@ function calculateOrientation(acc: { x: number; y: number; z: number }) {
   return { x: toDeg(pitchRad), y: 0, z: toDeg(rollRad) };
 }
 
+// This simple function is the key to smoothness
 function lowPassFilter(current: number, previous: number, alpha: number = 0.1) {
   return previous + alpha * (current - previous);
 }
@@ -96,21 +97,19 @@ function App() {
     return () => clearInterval(heartbeatInterval);
   }, []); // Empty dependency array ensures this interval doesn't constantly reset
 
+  // 4. MAIN DATA SUBSCRIPTION EFFECT
   useEffect(() => {
-    let unsubscribe: (() => void) | null = null;
-
+    // Defined locally so we can use it in both initial load and live updates
     const handleNewData = (newData: SensorDataRow, isInitialLoad: boolean = false) => {
       const raw = convertToSensorData(newData);
 
-      // Update the Ref immediately with local time
+      // ✅ FIX: Always update heartbeat and connection status
       lastPacketTimeRef.current = Date.now();
-      
-      // If we are getting data, we are definitely connected
-      if (!isInitialLoad) {
-        setIsConnected(true);
-      }
+      setIsConnected(true); // Remove the condition - always set connected when we get data
 
-      const smoothAlpha = 0.1;
+      // Smooth the accelerometer data (keep this - it's good)
+      // In your App component, ensure you're using the lowPassFilter correctly
+      const smoothAlpha = 0.1; // You can adjust this (0.1 = more smoothing, 0.5 = less)
       const smoothedAccel = {
         x: lowPassFilter(raw.accelerometer.x, prevAccel.current.x, smoothAlpha),
         y: lowPassFilter(raw.accelerometer.y, prevAccel.current.y, smoothAlpha),
@@ -122,7 +121,8 @@ function App() {
 
       setSensorData(finalData);
 
-      // Accident Logic...
+
+      // --- ACCIDENT DETECTION LOGIC START ---
       detectionService.current.addReading(
         finalData.accelerometer.x, finalData.accelerometer.y, finalData.accelerometer.z,
         finalData.gyroscope.x, finalData.gyroscope.y, finalData.gyroscope.z
@@ -160,26 +160,28 @@ function App() {
           newData.gyro_x, newData.gyro_y, newData.gyro_z
         );
       }
+      // --- ACCIDENT DETECTION LOGIC END ---
     };
 
-    const initializeData = async () => {
+    // A. FETCH HISTORY (Run this async so it doesn't block subscription)
+    const fetchHistory = async () => {
       const latestData = await getLatestSensorData();
       if (latestData) {
-        // Calculate age based on server time for initial load only
         const dataAge = Date.now() - new Date(latestData.created_at).getTime();
         handleNewData(latestData, true);
-        // Only set initial connected state if data is fresh (< 10s)
-        setIsConnected(dataAge < 10000);
-        if (dataAge < 10000) lastPacketTimeRef.current = Date.now();
+        // Only set connected on load if data is fresh (< 10s)
+        if (dataAge < 10000) setIsConnected(true);
       }
-      
-      unsubscribe = subscribeSensorData(async (newData) => handleNewData(newData, false));
     };
+    fetchHistory();
 
-    initializeData();
+    // B. SUBSCRIBE IMMEDIATELY (Do not await fetchHistory)
+    // This fixes the race condition where unmount happened before subscribe
+    const unsubscribeFn = subscribeSensorData(async (newData) => handleNewData(newData, false));
 
     return () => {
-      if (unsubscribe) unsubscribe();
+      // Cleanup
+      if (unsubscribeFn) unsubscribeFn();
     };
   }, [activeAccident, vehicleType]);
 
