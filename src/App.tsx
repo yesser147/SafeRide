@@ -77,7 +77,7 @@ function App() {
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
 
-    const handleNewData = (newData: SensorDataRow) => {
+    const handleNewData = (newData: SensorDataRow, isInitialLoad: boolean = false) => {
       const raw = convertToSensorData(newData);
 
       const smoothAlpha = 0.1;
@@ -91,8 +91,17 @@ function App() {
       const finalData: SensorData = { ...raw, accelerometer: smoothedAccel };
 
       setSensorData(finalData);
-      setIsConnected(true);
-      setLastUpdate(new Date(newData.created_at));
+
+      const dataTimestamp = new Date(newData.created_at);
+      const dataAge = Date.now() - dataTimestamp.getTime();
+
+      if (isInitialLoad) {
+        setIsConnected(dataAge < 5000);
+      } else {
+        setIsConnected(true);
+      }
+
+      setLastUpdate(dataTimestamp);
 
       detectionService.current.addReading(
         finalData.accelerometer.x, finalData.accelerometer.y, finalData.accelerometer.z,
@@ -135,8 +144,8 @@ function App() {
 
     const initializeData = async () => {
       const latestData = await getLatestSensorData();
-      if (latestData) handleNewData(latestData);
-      unsubscribe = subscribeSensorData(async (newData) => handleNewData(newData));
+      if (latestData) handleNewData(latestData, true);
+      unsubscribe = subscribeSensorData(async (newData) => handleNewData(newData, false));
     };
 
     initializeData();
