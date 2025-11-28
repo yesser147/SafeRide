@@ -9,6 +9,8 @@ import { getSimulatedData, type SensorData } from './data/staticData';
 import { getLatestSensorData, subscribeSensorData, type SensorDataRow, supabase, getVehicleType, setVehicleType } from './lib/supabase';
 import { AccidentDetectionService, type VehicleType } from './lib/accidentDetection';
 
+// ... (Keep helper functions like calculateOrientation, lowPassFilter, convertToSensorData exactly as they are) ...
+
 function calculateOrientation(acc: { x: number; y: number; z: number }) {
   const pitchRad = Math.atan2(acc.y, acc.z);
   const rollRad = Math.atan2(-acc.x, Math.sqrt(acc.y * acc.y + acc.z * acc.z));
@@ -32,10 +34,11 @@ function convertToSensorData(row: SensorDataRow): SensorData {
 function App() {
   const [sensorData, setSensorData] = useState<SensorData>(getSimulatedData());
   const [isConnected, setIsConnected] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [activeAccident, setActiveAccident] = useState<{ id: string; dangerPercentage: number } | null>(null);
   
-  // 1. Initialize from Local Storage to prevent reset on refresh
+  // Ref to track the exact moment we last heard from the device (using local browser time)
+  const lastPacketTimeRef = useRef<number>(Date.now());
+
   const [vehicleType, setVehicleTypeState] = useState<VehicleType>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('selectedVehicleType');
@@ -49,7 +52,6 @@ function App() {
   const prevAccel = useRef({ x: 0, y: 0, z: 1 });
   const isTriggered = useRef(false);
 
-  // 2. Sync state changes to Local Storage
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('selectedVehicleType', vehicleType);
@@ -59,7 +61,6 @@ function App() {
   useEffect(() => {
     const loadVehicleType = async () => {
       const type = await getVehicleType();
-      // Only update if we get a valid type back, otherwise trust local storage
       if (type) {
         setVehicleTypeState(type);
         detectionService.current.setVehicleType(type);
@@ -74,11 +75,40 @@ function App() {
     await setVehicleType(newType);
   };
 
+  // 1. SEPARATE HEARTBEAT EFFECT
+  // This runs independently to check connection status
+  useEffect(() => {
+    const heartbeatInterval = setInterval(() => {
+      // Threshold increased to 10000ms (10 seconds) to prevent flickering
+      const threshold = 10000; 
+      const timeSinceLastPacket = Date.now() - lastPacketTimeRef.current;
+      
+      // Only update state if it actually changes to avoid re-renders
+      const shouldBeConnected = timeSinceLastPacket < threshold;
+      
+      setIsConnected(prev => {
+        if (prev !== shouldBeConnected) return shouldBeConnected;
+        return prev;
+      });
+      
+    }, 1000);
+
+    return () => clearInterval(heartbeatInterval);
+  }, []); // Empty dependency array ensures this interval doesn't constantly reset
+
   useEffect(() => {
     let unsubscribe: (() => void) | null = null;
 
     const handleNewData = (newData: SensorDataRow, isInitialLoad: boolean = false) => {
       const raw = convertToSensorData(newData);
+
+      // Update the Ref immediately with local time
+      lastPacketTimeRef.current = Date.now();
+      
+      // If we are getting data, we are definitely connected
+      if (!isInitialLoad) {
+        setIsConnected(true);
+      }
 
       const smoothAlpha = 0.1;
       const smoothedAccel = {
@@ -92,17 +122,7 @@ function App() {
 
       setSensorData(finalData);
 
-      const dataTimestamp = new Date(newData.created_at);
-      const dataAge = Date.now() - dataTimestamp.getTime();
-
-      if (isInitialLoad) {
-        setIsConnected(dataAge < 5000);
-      } else {
-        setIsConnected(true);
-      }
-
-      setLastUpdate(dataTimestamp);
-
+      // Accident Logic...
       detectionService.current.addReading(
         finalData.accelerometer.x, finalData.accelerometer.y, finalData.accelerometer.z,
         finalData.gyroscope.x, finalData.gyroscope.y, finalData.gyroscope.z
@@ -144,23 +164,24 @@ function App() {
 
     const initializeData = async () => {
       const latestData = await getLatestSensorData();
-      if (latestData) handleNewData(latestData, true);
+      if (latestData) {
+        // Calculate age based on server time for initial load only
+        const dataAge = Date.now() - new Date(latestData.created_at).getTime();
+        handleNewData(latestData, true);
+        // Only set initial connected state if data is fresh (< 10s)
+        setIsConnected(dataAge < 10000);
+        if (dataAge < 10000) lastPacketTimeRef.current = Date.now();
+      }
+      
       unsubscribe = subscribeSensorData(async (newData) => handleNewData(newData, false));
     };
 
     initializeData();
 
-    const checkTimeout = setInterval(() => {
-      if (lastUpdate && Date.now() - lastUpdate.getTime() > 5000) {
-        setIsConnected(false);
-      }
-    }, 1000);
-
     return () => {
       if (unsubscribe) unsubscribe();
-      clearInterval(checkTimeout);
     };
-  }, [lastUpdate, activeAccident, vehicleType]);
+  }, [activeAccident, vehicleType]);
 
   const handleAccidentDetected = async (
     latitude: number, longitude: number, dangerPercentage: number,
