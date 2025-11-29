@@ -107,9 +107,7 @@ function App() {
       lastPacketTimeRef.current = Date.now();
       setIsConnected(true); // Remove the condition - always set connected when we get data
 
-      // Smooth the accelerometer data (keep this - it's good)
-      // In your App component, ensure you're using the lowPassFilter correctly
-      const smoothAlpha = 0.1; // You can adjust this (0.1 = more smoothing, 0.5 = less)
+      const smoothAlpha = 0.3;
       const smoothedAccel = {
         x: lowPassFilter(raw.accelerometer.x, prevAccel.current.x, smoothAlpha),
         y: lowPassFilter(raw.accelerometer.y, prevAccel.current.y, smoothAlpha),
